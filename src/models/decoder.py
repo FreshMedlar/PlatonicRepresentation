@@ -31,11 +31,15 @@ class ConditionalTextDecoder(nn.Module):
             config.d_model, max_len=config.max_seq_len + config.num_soft_tokens + 16
         )
 
-        # Style embedding for nuisance conditioning
-        self.style_embedding = nn.Embedding(config.num_styles, config.style_dim)
+        # Style embedding (optional, disabled when style_dim == 0)
+        if config.style_dim > 0 and config.num_styles > 0:
+            self.style_embedding = nn.Embedding(config.num_styles, config.style_dim)
+            input_proj_dim = config.latent_dim + config.style_dim
+        else:
+            self.style_embedding = None
+            input_proj_dim = config.latent_dim
 
-        # MLP projector mapping [latent_dim + style_dim] -> (num_soft_tokens * d_model)
-        input_proj_dim = config.latent_dim + config.style_dim
+        # MLP projector mapping Platonic latent state vector -> (num_soft_tokens * d_model)
         self.soft_prompt_mlp = nn.Sequential(
             nn.Linear(input_proj_dim, config.d_model * 2),
             nn.GELU(),
@@ -101,12 +105,13 @@ class ConditionalTextDecoder(nn.Module):
         else:
             e_tilde = e
 
-        # Style embedding
-        if style_ids is None:
-            style_ids = torch.zeros(B, dtype=torch.long, device=device)
-        s_emb = self.style_embedding(style_ids)  # (B, style_dim)
+        # Style embedding if enabled
+        if self.style_embedding is not None and style_ids is not None:
+            s_emb = self.style_embedding(style_ids)  # (B, style_dim)
+            combined = torch.cat([e_tilde, s_emb], dim=-1)  # (B, latent_dim + style_dim)
+        else:
+            combined = e_tilde
 
-        combined = torch.cat([e_tilde, s_emb], dim=-1)  # (B, latent_dim + style_dim)
         soft_flat = self.soft_prompt_mlp(combined)  # (B, M * d_model)
         soft_tokens = soft_flat.view(B, self.num_soft_tokens, self.d_model)
         return soft_tokens
@@ -189,7 +194,7 @@ class ConditionalTextDecoder(nn.Module):
         device = e.device
         M = self.num_soft_tokens
 
-        style_tensor = torch.tensor([style_id] * B, dtype=torch.long, device=device)
+        style_tensor = torch.tensor([style_id] * B, dtype=torch.long, device=device) if self.style_embedding is not None else None
         soft_tokens = self.project_soft_prompts(e, style_ids=style_tensor, inject_noise=False)  # (B, M, D)
 
         generated = torch.tensor([[bos_id] * B], dtype=torch.long, device=device).transpose(0, 1)  # (B, 1)

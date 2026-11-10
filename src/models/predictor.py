@@ -106,10 +106,13 @@ class LatentPredictor(nn.Module):
         self,
         z_seq: torch.Tensor,
         valid_mask: Optional[torch.Tensor] = None,
+        jitter_std: float = 0.0,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Computes predictive transition loss + SIGReg anti-collapse on predicted states.
         Predicts z_{t+1} from z_{1...t}.
+        Optional jitter_std injects continuous Gaussian noise into historical states during
+        training (Contractive JEPA) to prevent point memorization.
         """
         B, T, D = z_seq.shape
         if T < 2:
@@ -118,6 +121,11 @@ class LatentPredictor(nn.Module):
         # Input is steps 0 to T-2
         inputs = z_seq[:, :-1, :]  # (B, T-1, D)
         targets = z_seq[:, 1:, :]  # (B, T-1, D)
+
+        # Continuous latent augmentation: perturb historical state representations during training
+        if jitter_std > 0.0 and self.training:
+            noise = torch.randn_like(inputs) * jitter_std
+            inputs = F.normalize(inputs + noise, dim=-1)
 
         if valid_mask is not None:
             in_mask = valid_mask[:, :-1]

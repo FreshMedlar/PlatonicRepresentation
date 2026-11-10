@@ -1,0 +1,25 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Datasets and raw parquet files (root data directory only)
+/data/
+*.parquet
+
+# Model checkpoints and weights (root only)
+/checkpoints/
+/checkpoints_*/
+*.pt
+*.pth
+*.bin
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store

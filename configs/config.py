@@ -51,8 +51,8 @@ class DecoderConfig:
     latent_dim: int = 128
     num_soft_tokens: int = 4  # Number of prefix virtual soft prompt tokens M
     noise_scale: float = 0.05  # sigma for perturbation e_tilde = e + N(0, sigma^2)
-    num_styles: int = 4  # Number of style categories (e.g., standard, formal, casual, concise)
-    style_dim: int = 32
+    num_styles: int = 0  # 0 indicates no discrete style conditioning
+    style_dim: int = 0
     dropout: float = 0.1
 
 

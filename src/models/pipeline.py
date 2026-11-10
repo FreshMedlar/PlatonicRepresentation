@@ -37,11 +37,23 @@ class GoodViewTextJEPA(nn.Module):
         self.decoder = decoder or ConditionalTextDecoder(config.decoder)
         self.predictor = predictor or LatentPredictor(config.predictor)
 
+    def to(self, *args, **kwargs):
+        super().to(*args, **kwargs)
+        self.encoder.to(*args, **kwargs)
+        self.decoder.to(*args, **kwargs)
+        self.predictor.to(*args, **kwargs)
+        return self
+
+    @property
+    def device(self) -> torch.device:
+        return next(self.encoder.parameters()).device
+
     def encode_text(self, text: str) -> torch.Tensor:
         """
         Maps natural language text into invariant Platonic state vector e in R^k.
         """
         self.encoder.eval()
+        dev = self.device
         with torch.no_grad():
             enc = self.tokenizer.encode(
                 text,
@@ -49,8 +61,8 @@ class GoodViewTextJEPA(nn.Module):
                 add_eos=True,
                 max_len=self.config.encoder.max_seq_len,
             )
-            input_ids = enc["input_ids"].unsqueeze(0)
-            attn_mask = enc["attention_mask"].unsqueeze(0)
+            input_ids = enc["input_ids"].unsqueeze(0).to(dev)
+            attn_mask = enc["attention_mask"].unsqueeze(0).to(dev)
             e = self.encoder(input_ids, attention_mask=attn_mask)
         return e  # (1, latent_dim)
 
@@ -73,7 +85,7 @@ class GoodViewTextJEPA(nn.Module):
     def decode_state(
         self,
         z: torch.Tensor,
-        style_id: int = 0,
+        style_id: Optional[int] = None,
         max_new_tokens: int = 32,
         temperature: float = 0.8,
     ) -> str:
@@ -81,13 +93,15 @@ class GoodViewTextJEPA(nn.Module):
         Renders Platonic state vector z into natural language text tokens.
         """
         self.decoder.eval()
+        dev = self.device
+        z = z.to(dev)
         with torch.no_grad():
             gen_ids = self.decoder.generate(
                 z,
                 bos_id=self.tokenizer.bos_id,
                 eos_id=self.tokenizer.eos_id,
                 pad_id=self.tokenizer.pad_id,
-                style_id=style_id,
+                style_id=style_id if style_id is not None else 0,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
             )
@@ -98,7 +112,7 @@ class GoodViewTextJEPA(nn.Module):
         self,
         prompt: str,
         reasoning_steps: int = 3,
-        style_id: int = 0,
+        style_id: Optional[int] = None,
         max_tokens_per_step: int = 24,
     ) -> Dict[str, Union[str, List[str], torch.Tensor]]:
         """
