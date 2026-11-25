@@ -22,6 +22,7 @@ import torch.nn.functional as F
 from scipy.stats import spearmanr
 
 from src.models.pipeline import GoodViewTextJEPA
+from src.models.sadl import compute_excitation, compute_representation_stats, compute_transmission
 
 
 def compute_effective_rank(embeddings: torch.Tensor) -> float:
@@ -57,9 +58,12 @@ def benchmark_encoder_geometry(
         return {"alignment": 0.0, "uniformity": 0.0, "effective_rank": 0.0}
 
     vecs1, vecs2 = [], []
+    h_list, z_raw_list = [], []
     for x1, x2 in pairs:
-        v1 = pipeline.encode_text(x1)
-        v2 = pipeline.encode_text(x2)
+        h1, v1 = pipeline.encode_text(x1, return_both=True)
+        h2, v2 = pipeline.encode_text(x2, return_both=True)
+        h_list.extend([h1, h2])
+        z_raw_list.extend([v1, v2])
         # Normalize to unit sphere for metric consistency
         v1 = F.normalize(v1, p=2, dim=-1)
         v2 = F.normalize(v2, p=2, dim=-1)
@@ -68,6 +72,8 @@ def benchmark_encoder_geometry(
 
     t1 = torch.cat(vecs1, dim=0)  # (N, D)
     t2 = torch.cat(vecs2, dim=0)  # (N, D)
+    all_h = torch.cat(h_list, dim=0)
+    all_z_raw = torch.cat(z_raw_list, dim=0)
 
     # 1. Alignment
     align = torch.norm(t1 - t2, dim=-1).pow(2).mean().item()
@@ -87,14 +93,29 @@ def benchmark_encoder_geometry(
     off_diag = pdist_sq[~eye_mask]
     uniform = torch.log(torch.exp(-2.0 * off_diag).mean() + 1e-12).item()
 
-    # 3. Effective Rank of representation batch
+    # 3. Effective Rank of representation batch + SADL supply/demand diagnostics
     eff_rank = compute_effective_rank(all_vecs)
+    h_stats = compute_representation_stats(all_h)
+    z_stats = compute_representation_stats(all_z_raw)
+    with torch.no_grad():
+        k_exc = float(compute_excitation(all_h).item())
+        k_tr = float(compute_transmission(all_h, all_z_raw).item())
+        q_exc = float(compute_excitation(all_z_raw).item())
 
     return {
         "alignment": float(align),
         "uniformity": float(uniform),
         "effective_rank": float(eff_rank),
         "latent_dim": int(all_vecs.size(-1)),
+        "f_H": h_stats["f"],
+        "f_Z": z_stats["f"],
+        "erank_H": h_stats["erank"],
+        "erank_Z": z_stats["erank"],
+        "mean_cos_H": h_stats["mean_cos"],
+        "mean_cos_Z": z_stats["mean_cos"],
+        "k_exc": k_exc,
+        "k_tr": k_tr,
+        "q_exc": q_exc,
     }
 
 
@@ -305,6 +326,10 @@ def run_full_benchmark(
     print(f"  - Uniformity L_unif:   {geom['uniformity']:.4f} (lower is better)")
     print(
         f"  - Effective Rank:      {geom['effective_rank']:.2f} / {geom['latent_dim']} (higher is better)"
+    )
+    print(
+        f"  - Supply/Demand Probe: f_H={geom['f_H']:.4f}, erank(H)={geom['erank_H']:.2f}, "
+        f"k_exc={geom['k_exc']:.3f}, k_tr={geom['k_tr']:.3f}, q_exc={geom['q_exc']:.3f}"
     )
 
     # 2. STS-B

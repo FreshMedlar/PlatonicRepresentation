@@ -13,6 +13,7 @@ from src.tokenizer.bpe_tokenizer import BPETokenizer
 from src.data.parallel_dataset import GoodViewPairDataset
 from src.data.view_generator import GoodViewGenerator
 from src.models.encoder import TextJEPAEncoder
+from src.models.sadl import SADLLoss
 from src.models.sigreg import SIGRegLoss, compute_lejepa_loss
 from src.training.trainer_utils import create_optimizer, get_cosine_schedule_with_warmup, save_checkpoint
 
@@ -41,6 +42,17 @@ def train_jepa_encoder(
         num_integration_steps=config.sigreg.num_integration_steps,
     ).to(device)
 
+    sadl = (
+        SADLLoss(
+            alpha=config.sadl.alpha,
+            gamma=config.sadl.gamma,
+            rho=config.sadl.rho,
+            eps=config.sadl.eps,
+        ).to(device)
+        if config.sadl.enabled
+        else None
+    )
+
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
     total_steps = epochs * len(dataloader)
     warmup_steps = max(1, int(0.1 * total_steps))
@@ -67,11 +79,23 @@ def train_jepa_encoder(
             optimizer.zero_grad()
 
             # Forward pass both views through encoder
-            e1 = encoder(v1_ids, attention_mask=v1_mask)
-            e2 = encoder(v2_ids, attention_mask=v2_mask)
+            if sadl is not None:
+                h1, e1 = encoder(v1_ids, attention_mask=v1_mask, return_both=True)
+                h2, e2 = encoder(v2_ids, attention_mask=v2_mask, return_both=True)
+            else:
+                h1 = h2 = None
+                e1 = encoder(v1_ids, attention_mask=v1_mask)
+                e2 = encoder(v2_ids, attention_mask=v2_mask)
 
             tot_loss, inv_loss, reg_loss = compute_lejepa_loss(
-                e1, e2, sigreg, reg_weight=config.sigreg.reg_weight
+                e1,
+                e2,
+                sigreg,
+                reg_weight=config.sigreg.reg_weight,
+                h1=h1,
+                h2=h2,
+                sadl_loss_fn=sadl,
+                supply_weight=config.sadl.supply_weight,
             )
 
             tot_loss.backward()

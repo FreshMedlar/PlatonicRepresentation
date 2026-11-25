@@ -33,6 +33,7 @@ from configs.config import (
     SystemConfig,
     EncoderConfig,
     SIGRegConfig,
+    SADLConfig,
     DecoderConfig,
     PredictorConfig,
 )
@@ -43,6 +44,7 @@ from src.models.encoder import TextJEPAEncoder
 from src.models.decoder import ConditionalTextDecoder
 from src.models.predictor import LatentPredictor
 from src.models.pipeline import GoodViewTextJEPA
+from src.models.sadl import SADLLoss, compute_representation_stats
 from src.models.sigreg import SIGRegLoss, compute_lejepa_loss
 from src.training.trainer_utils import create_optimizer, get_cosine_schedule_with_warmup
 from src.evaluation.benchmark import run_full_benchmark
@@ -258,6 +260,8 @@ def train_gpu(
     latent_dim: int = 256,
     retokenize: bool = False,
     rebuild_tokenizer: bool = False,
+    use_sadl: bool = True,
+    supply_weight: float = 0.01,
 ):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"\n============================================================")
@@ -302,13 +306,24 @@ def train_gpu(
     config = SystemConfig(
         encoder=EncoderConfig(vocab_size=actual_vocab_size, max_seq_len=48, d_model=d_model, num_layers=num_layers, num_heads=num_heads, d_ff=d_model*4, latent_dim=latent_dim),
         sigreg=SIGRegConfig(lam=1.0, num_projections=64, num_integration_steps=17, reg_weight=0.02),
+        sadl=SADLConfig(enabled=use_sadl, supply_weight=supply_weight),
         decoder=DecoderConfig(vocab_size=actual_vocab_size, max_seq_len=48, d_model=d_model, num_layers=num_layers, num_heads=num_heads, d_ff=d_model*4, latent_dim=latent_dim, num_soft_tokens=4, num_styles=0, style_dim=0),
-        predictor=PredictorConfig(latent_dim=latent_dim, max_steps=6, d_model=d_model, num_layers=num_layers, num_heads=num_heads, d_ff=d_model*4, reg_weight=0.05),
+        predictor=PredictorConfig(latent_dim=latent_dim, max_steps=6, d_model=d_model, num_layers=num_layers, num_heads=num_heads, d_ff=d_model*4, reg_weight=0.0),
         device="cuda",
     )
 
     encoder = TextJEPAEncoder(config.encoder).to(device)
     sigreg = SIGRegLoss(latent_dim=latent_dim, num_projections=512, knots=17).to(device)
+    sadl = (
+        SADLLoss(
+            alpha=config.sadl.alpha,
+            gamma=config.sadl.gamma,
+            rho=config.sadl.rho,
+            eps=config.sadl.eps,
+        ).to(device)
+        if use_sadl
+        else None
+    )
     decoder = ConditionalTextDecoder(config.decoder).to(device)
     predictor = LatentPredictor(config.predictor).to(device)
 
@@ -379,7 +394,8 @@ def train_gpu(
     # STAGE 1: JEPA ENCODER (GPU-RESIDENT STREAM)
     # ==========================================================
     if "1" in stages_to_run:
-        print(f"\n>>> STAGE 1: GPU TRAINING JEPA ENCODER WITH SIGREG ({epochs_s1} Epochs)")
+        sadl_tag = f" + SADL(lambda_S={supply_weight})" if sadl is not None else ""
+        print(f"\n>>> STAGE 1: GPU TRAINING JEPA ENCODER WITH SIGREG{sadl_tag} ({epochs_s1} Epochs)")
         encoder.train()
         opt1 = create_optimizer(encoder, lr=5e-4, weight_decay=0.01)
         N = num_samples
@@ -397,9 +413,23 @@ def train_gpu(
                 v2_ids, v2_m = pair_data["v2_ids"][idx], pair_data["v2_mask"][idx]
 
                 opt1.zero_grad()
-                e1 = encoder(v1_ids, attention_mask=v1_m)
-                e2 = encoder(v2_ids, attention_mask=v2_m)
-                tot_l, inv_l, reg_l = compute_lejepa_loss(e1, e2, sigreg, reg_weight=0.02)
+                if sadl is not None:
+                    h1, e1 = encoder(v1_ids, attention_mask=v1_m, return_both=True)
+                    h2, e2 = encoder(v2_ids, attention_mask=v2_m, return_both=True)
+                else:
+                    h1 = h2 = None
+                    e1 = encoder(v1_ids, attention_mask=v1_m)
+                    e2 = encoder(v2_ids, attention_mask=v2_m)
+                tot_l, inv_l, reg_l = compute_lejepa_loss(
+                    e1,
+                    e2,
+                    sigreg,
+                    reg_weight=0.02,
+                    h1=h1,
+                    h2=h2,
+                    sadl_loss_fn=sadl,
+                    supply_weight=supply_weight,
+                )
                 tot_l.backward()
                 torch.nn.utils.clip_grad_norm_(encoder.parameters(), max_norm=1.0)
                 opt1.step()
@@ -413,7 +443,12 @@ def train_gpu(
             s1_inv.append(ep_inv / num_batches)
             s1_reg.append(ep_reg / num_batches)
             if (ep + 1) % 5 == 0 or ep == epochs_s1 - 1:
-                print(f"  [Epoch {ep+1:02d}/{epochs_s1}] Total Loss: {s1_tot[-1]:.4f} | Invariance MSE: {s1_inv[-1]:.6f} | SIGReg: {s1_reg[-1]:.4f}")
+                probe_h = h1 if h1 is not None else encoder(v1_ids, attention_mask=v1_m, return_hidden=True)
+                h_st = compute_representation_stats(probe_h)
+                print(
+                    f"  [Epoch {ep+1:02d}/{epochs_s1}] Total Loss: {s1_tot[-1]:.4f} | Invariance MSE: {s1_inv[-1]:.6f} "
+                    f"| SIGReg: {s1_reg[-1]:.4f} | f_H={h_st['f']:.3f} erank_H={h_st['erank']:.1f}"
+                )
 
         training_logs["stage1_encoder"] = {"total_loss": s1_tot, "inv_loss": s1_inv, "reg_loss": s1_reg}
         torch.save({"encoder": encoder.state_dict(), "history": training_logs["stage1_encoder"]}, enc_path)
@@ -661,6 +696,8 @@ def parse_args():
     parser.add_argument("--save_dir", type=str, default="checkpoints_gpu_fast", help="Checkpoint directory")
     parser.add_argument("--retokenize", action="store_true", help="Force rebuild dataset caches")
     parser.add_argument("--rebuild_tokenizer", action="store_true", help="Force retrain BPE tokenizer from scratch")
+    parser.add_argument("--no_sadl", action="store_true", help="Disable SADL Supply Regularizer on encoder H")
+    parser.add_argument("--supply_weight", type=float, default=0.01, help="SADL Supply Regularizer weight lambda_S")
     return parser.parse_args()
 
 
@@ -681,4 +718,6 @@ if __name__ == "__main__":
         latent_dim=args.latent_dim,
         retokenize=args.retokenize,
         rebuild_tokenizer=args.rebuild_tokenizer,
+        use_sadl=not args.no_sadl,
+        supply_weight=args.supply_weight,
     )

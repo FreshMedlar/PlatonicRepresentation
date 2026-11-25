@@ -84,9 +84,16 @@ def compute_lejepa_loss(
     e2: torch.Tensor,
     sigreg_loss_fn: SIGRegLoss,
     reg_weight: float = 0.05,
+    h1: Optional[torch.Tensor] = None,
+    h2: Optional[torch.Tensor] = None,
+    sadl_loss_fn: Optional[nn.Module] = None,
+    supply_weight: float = 0.01,
+    sadl_view_mean: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Total LeJEPA objective: Invariance MSE + lambda * SIGReg(e1, e2).
+    Total LeJEPA objective: Invariance MSE + lambda * SIGReg(e1, e2) [+ lambda_S * SADL(H, sg(Z))].
+    When h1, h2, and sadl_loss_fn are provided, applies the one-sided SADL Supply Regularizer
+    directly on pre-projector encoder representations H to prevent null-space collapse.
     """
     # Invariance loss: distance between two positive views of same world state z
     inv_loss = F.mse_loss(e1, e2)
@@ -96,4 +103,23 @@ def compute_lejepa_loss(
     reg_loss = sigreg_loss_fn(all_embeddings)
 
     total_loss = inv_loss + reg_weight * reg_loss
+
+    if (
+        sadl_loss_fn is not None
+        and h1 is not None
+        and h2 is not None
+        and supply_weight > 0.0
+    ):
+        if sadl_view_mean:
+            h_sadl = 0.5 * (h1 + h2)
+            z_sadl = 0.5 * (e1 + e2)
+            d_zero = sadl_loss_fn._get_d_zero(sigreg_loss_fn, all_embeddings)
+            supply_loss = sadl_loss_fn(h_sadl, z_sadl, demand_loss=reg_loss, demand_zero=d_zero)
+        else:
+            h_sadl = torch.cat([h1, h2], dim=0)
+            supply_loss = sadl_loss_fn(
+                h_sadl, all_embeddings, demand_loss=reg_loss, demand_fn=sigreg_loss_fn
+            )
+        total_loss = total_loss + supply_weight * supply_loss.to(total_loss.dtype)
+
     return total_loss, inv_loss, reg_loss

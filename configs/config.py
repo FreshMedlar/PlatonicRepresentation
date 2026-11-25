@@ -41,6 +41,17 @@ class SIGRegConfig:
 
 
 @dataclass
+class SADLConfig:
+    """Supply And Demand Loss (SADL) parameters (arXiv:2611.21596v1)."""
+    enabled: bool = True
+    supply_weight: float = 0.01  # lambda_S weighting S(H, sg(Z))
+    alpha: float = 0.5           # geometric demand interpolation weight
+    gamma: float = 9.0           # capacity SNR parameter
+    rho: float = 1e-3            # transmission ridge coefficient
+    eps: float = 1e-6            # numerical floor and log smoothing
+
+
+@dataclass
 class DecoderConfig:
     vocab_size: int = 4000
     max_seq_len: int = 64
@@ -73,6 +84,7 @@ class SystemConfig:
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     sigreg: SIGRegConfig = field(default_factory=SIGRegConfig)
+    sadl: SADLConfig = field(default_factory=SADLConfig)
     decoder: DecoderConfig = field(default_factory=DecoderConfig)
     predictor: PredictorConfig = field(default_factory=PredictorConfig)
     seed: int = 42

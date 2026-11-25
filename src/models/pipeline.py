@@ -48,9 +48,14 @@ class GoodViewTextJEPA(nn.Module):
     def device(self) -> torch.device:
         return next(self.encoder.parameters()).device
 
-    def encode_text(self, text: str) -> torch.Tensor:
+    def encode_text(
+        self,
+        text: str,
+        return_both: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
-        Maps natural language text into invariant Platonic state vector e in R^k.
+        Maps natural language text into invariant Platonic state vector e in R^k
+        (or (H, Z) when return_both=True).
         """
         self.encoder.eval()
         dev = self.device
@@ -63,8 +68,7 @@ class GoodViewTextJEPA(nn.Module):
             )
             input_ids = enc["input_ids"].unsqueeze(0).to(dev)
             attn_mask = enc["attention_mask"].unsqueeze(0).to(dev)
-            e = self.encoder(input_ids, attention_mask=attn_mask)
-        return e  # (1, latent_dim)
+            return self.encoder(input_ids, attention_mask=attn_mask, return_both=return_both)
 
     def compare_semantic_invariance(self, text1: str, text2: str) -> Dict[str, float]:
         """

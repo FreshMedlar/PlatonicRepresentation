@@ -4,7 +4,7 @@ Bidirectional Transformer encoder + MLP projector mapping text to Platonic seman
 """
 
 import math
-from typing import Optional
+from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -60,10 +60,10 @@ class BatchStandardization1d(nn.Module):
             with torch.no_grad():
                 self.running_mean.copy_(self.momentum * mean + (1.0 - self.momentum) * self.running_mean)
                 self.running_var.copy_(self.momentum * var + (1.0 - self.momentum) * self.running_var)
-            std = torch.sqrt(var).clamp(min=self.eps)
+            std = torch.sqrt(var.clamp(min=self.eps * self.eps))
             return (x - mean) / std
         else:
-            std = torch.sqrt(self.running_var).clamp(min=self.eps)
+            std = torch.sqrt(self.running_var.clamp(min=self.eps * self.eps))
             return (x - self.running_mean) / std
 
 
@@ -110,25 +110,15 @@ class TextJEPAEncoder(nn.Module):
             nn.init.ones_(module.weight)
             nn.init.zeros_(module.bias)
 
-    def forward(
+    def forward_from_embeddings(
         self,
-        input_ids: torch.Tensor,
+        token_embeddings: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         return_hidden: bool = False,
-    ) -> torch.Tensor:
-        """
-        Args:
-            input_ids: (B, L) token IDs
-            attention_mask: (B, L) 1 for valid tokens, 0 for padding
-            return_hidden: if True, returns pooled representation before projector
-        Returns:
-            Latent embedding e in R^k of shape (B, latent_dim)
-        """
-        B, L = input_ids.shape
-
-        # Token + positional embedding
-        x = self.token_embedding(input_ids)
-        x = self.pos_encoding(x)
+        return_both: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """Encodes pre-computed token embeddings (B, L, d_model) into R^k (supports differentiable soft tokens)."""
+        x = self.pos_encoding(token_embeddings)
 
         # PyTorch TransformerEncoder expects src_key_padding_mask where True indicates PADDED positions
         if attention_mask is not None:
@@ -155,9 +145,34 @@ class TextJEPAEncoder(nn.Module):
         else:
             pooled = h.mean(dim=1)
 
-        if return_hidden:
+        if return_hidden and not return_both:
             return pooled
 
         # Project into Platonic semantic space R^k
         e = self.projector(pooled)
+        if return_both:
+            return pooled, e
         return e
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        return_hidden: bool = False,
+        return_both: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Args:
+            input_ids: (B, L) token IDs
+            attention_mask: (B, L) 1 for valid tokens, 0 for padding
+            return_hidden: if True, returns pooled representation H before projector
+            return_both: if True, returns (H, Z) = (pooled, projected) in one pass
+        Returns:
+            Latent embedding e in R^k of shape (B, latent_dim), or H, or (H, Z)
+        """
+        return self.forward_from_embeddings(
+            self.token_embedding(input_ids),
+            attention_mask=attention_mask,
+            return_hidden=return_hidden,
+            return_both=return_both,
+        )

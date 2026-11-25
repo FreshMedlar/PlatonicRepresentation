@@ -144,9 +144,13 @@ class LatentPredictor(nn.Module):
             mse = F.mse_loss(preds, targets)
             valid_preds = preds.reshape(-1, D)
 
-        # Apply SIGReg to predicted latent states to prevent latent collapse
-        reg_loss = self.sigreg(valid_preds)
-        total_loss = mse + self.config.reg_weight * reg_loss
+        # Apply SIGReg only when reg_weight > 0 (disabled during pure predictive training)
+        if self.config.reg_weight > 0.0:
+            reg_loss = self.sigreg(valid_preds)
+            total_loss = mse + self.config.reg_weight * reg_loss
+        else:
+            reg_loss = torch.zeros((), device=preds.device, dtype=preds.dtype)
+            total_loss = mse
 
         return total_loss, mse, reg_loss
 
