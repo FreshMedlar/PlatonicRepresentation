@@ -42,6 +42,7 @@ class BPETokenizer:
         self.vocab: Dict[str, int] = {}
         self.inverse_vocab: Dict[int, str] = {}
         self.merges: List[Tuple[str, str]] = []
+        self.word_cache: Dict[str, List[str]] = {}
         self._init_special_tokens()
 
     def _init_special_tokens(self):
@@ -153,19 +154,27 @@ class BPETokenizer:
                 break
 
     def _tokenize_word(self, word: str) -> List[str]:
+        if word in self.word_cache:
+            return self.word_cache[word]
         chars = list(word) + ["</w>"]
-        for p0, p1 in self.merges:
-            merged = p0 + p1
-            new_chars = []
-            i = 0
-            while i < len(chars):
-                if i < len(chars) - 1 and chars[i] == p0 and chars[i + 1] == p1:
-                    new_chars.append(merged)
-                    i += 2
-                else:
-                    new_chars.append(chars[i])
-                    i += 1
-            chars = new_chars
+        if len(chars) > 1:
+            for p0, p1 in self.merges:
+                if len(chars) == 1:
+                    break
+                if p0 not in chars:
+                    continue
+                merged = p0 + p1
+                new_chars = []
+                i = 0
+                while i < len(chars):
+                    if i < len(chars) - 1 and chars[i] == p0 and chars[i + 1] == p1:
+                        new_chars.append(merged)
+                        i += 2
+                    else:
+                        new_chars.append(chars[i])
+                        i += 1
+                chars = new_chars
+        self.word_cache[word] = chars
         return chars
 
     def tokenize(self, text: str) -> List[str]:

@@ -8,7 +8,7 @@ from typing import List, Optional
 
 @dataclass
 class TokenizerConfig:
-    vocab_size: int = 1000
+    vocab_size: int = 4000
     pad_token: str = "[PAD]"
     unk_token: str = "[UNK]"
     bos_token: str = "[BOS]"
@@ -21,13 +21,13 @@ class TokenizerConfig:
 
 @dataclass
 class EncoderConfig:
-    vocab_size: int = 1000
+    vocab_size: int = 4000
     max_seq_len: int = 64
-    d_model: int = 192
-    num_layers: int = 4
-    num_heads: int = 4
-    d_ff: int = 512
-    latent_dim: int = 128  # Dimension k of Platonic semantic space
+    d_model: int = 384
+    num_layers: int = 6
+    num_heads: int = 12
+    d_ff: int = 1536
+    latent_dim: int = 256  # Dimension k of Platonic semantic space
     dropout: float = 0.1
 
 
@@ -37,18 +37,18 @@ class SIGRegConfig:
     lam: float = 1.0  # Quadrature bandwidth scale (-4*lam to 4*lam)
     num_projections: int = 64  # Number of 1D Cramér-Wold random projections
     num_integration_steps: int = 17  # Quadrature knots
-    reg_weight: float = 0.05  # lambda balancing invariance loss and SIGReg
+    reg_weight: float = 0.02  # lambda balancing invariance loss and SIGReg (LeCun et al. 2025)
 
 
 @dataclass
 class DecoderConfig:
-    vocab_size: int = 1000
+    vocab_size: int = 4000
     max_seq_len: int = 64
-    d_model: int = 192
-    num_layers: int = 4
-    num_heads: int = 4
-    d_ff: int = 512
-    latent_dim: int = 128
+    d_model: int = 384
+    num_layers: int = 6
+    num_heads: int = 12
+    d_ff: int = 1536
+    latent_dim: int = 256
     num_soft_tokens: int = 4  # Number of prefix virtual soft prompt tokens M
     noise_scale: float = 0.05  # sigma for perturbation e_tilde = e + N(0, sigma^2)
     num_styles: int = 0  # 0 indicates no discrete style conditioning
@@ -58,12 +58,12 @@ class DecoderConfig:
 
 @dataclass
 class PredictorConfig:
-    latent_dim: int = 128  # Vector dimension k
+    latent_dim: int = 256  # Vector dimension k
     max_steps: int = 16  # Maximum reasoning sequence length T
-    d_model: int = 192
-    num_layers: int = 4
-    num_heads: int = 4
-    d_ff: int = 512
+    d_model: int = 384
+    num_layers: int = 6
+    num_heads: int = 12
+    d_ff: int = 1536
     dropout: float = 0.1
     reg_weight: float = 0.05  # lambda for SIGReg on predicted states
 

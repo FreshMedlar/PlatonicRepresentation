@@ -38,6 +38,35 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, :seq_len]
 
 
+class BatchStandardization1d(nn.Module):
+    """
+    Scale-invariant batch standardization for self-supervised JEPAs (LeJEPA / VICReg).
+    Guarantees Var(z) = 1.0 and Mean(z) = 0.0 along each latent dimension across the batch,
+    preventing representation collapse regardless of weight initialization scale.
+    Tracks running statistics for deterministic single-sample inference (B=1).
+    """
+    def __init__(self, num_features: int, eps: float = 1e-12, momentum: float = 0.1):
+        super().__init__()
+        self.num_features = num_features
+        self.eps = eps
+        self.momentum = momentum
+        self.register_buffer("running_mean", torch.zeros(num_features))
+        self.register_buffer("running_var", torch.ones(num_features))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.training and x.shape[0] > 1:
+            mean = x.mean(dim=0)
+            var = x.var(dim=0, unbiased=False)
+            with torch.no_grad():
+                self.running_mean.copy_(self.momentum * mean + (1.0 - self.momentum) * self.running_mean)
+                self.running_var.copy_(self.momentum * var + (1.0 - self.momentum) * self.running_var)
+            std = torch.sqrt(var).clamp(min=self.eps)
+            return (x - mean) / std
+        else:
+            std = torch.sqrt(self.running_var).clamp(min=self.eps)
+            return (x - self.running_mean) / std
+
+
 class TextJEPAEncoder(nn.Module):
     """
     Bidirectional Transformer Encoder with MLP Projector into R^k.
@@ -61,17 +90,18 @@ class TextJEPAEncoder(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=config.num_layers)
         self.layer_norm = nn.LayerNorm(config.d_model)
 
-        # Projection head to latent dimension k (Platonic semantic space)
+        # Projection head to latent dimension k (Platonic semantic space) with batch standardization anti-collapse
         self.projector = nn.Sequential(
             nn.Linear(config.d_model, config.d_model),
             nn.GELU(),
             nn.Linear(config.d_model, config.latent_dim),
+            BatchStandardization1d(config.latent_dim),
         )
         self.apply(self._init_weights)
 
     def _init_weights(self, module: nn.Module):
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.xavier_uniform_(module.weight)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):

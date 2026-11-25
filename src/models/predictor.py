@@ -125,7 +125,7 @@ class LatentPredictor(nn.Module):
         # Continuous latent augmentation: perturb historical state representations during training
         if jitter_std > 0.0 and self.training:
             noise = torch.randn_like(inputs) * jitter_std
-            inputs = F.normalize(inputs + noise, dim=-1)
+            inputs = inputs + noise
 
         if valid_mask is not None:
             in_mask = valid_mask[:, :-1]

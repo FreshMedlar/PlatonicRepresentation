@@ -31,12 +31,14 @@ class HFGoodViewLoader:
         max_clusters: int = 5000,
         max_trajectories: int = 2000,
         min_cluster_size: int = 2,
+        max_recap_pairs: int = 100000,
         seed: int = 42,
     ):
         self.rng = random.Random(seed)
         self.max_clusters = max_clusters
         self.max_trajectories = max_trajectories
         self.min_cluster_size = min_cluster_size
+        self.max_recap_pairs = max_recap_pairs
 
         self.clusters: Dict[str, List[str]] = {}
         self.trajectories: List[Tuple[str, List[str]]] = []
@@ -64,9 +66,9 @@ class HFGoodViewLoader:
                     rc = str(r["re_caption"]).strip()
                     if 10 <= len(o) <= 300 and 10 <= len(rc) <= 300:
                         self.recap_pairs.append((o, rc))
-                    if len(self.recap_pairs) >= max(self.max_clusters * 2, 20000):
+                    if len(self.recap_pairs) >= self.max_recap_pairs:
                         break
-                if len(self.recap_pairs) >= max(self.max_clusters * 2, 20000):
+                if len(self.recap_pairs) >= self.max_recap_pairs:
                     break
             print(f"[+] Loaded {len(self.recap_pairs)} Good-View pairs from Recap-DataComp (LeCun dataset).")
         else:
@@ -135,7 +137,7 @@ class HFGoodViewLoader:
         """Gathers a balanced text corpus for training the subword BPE tokenizer."""
         corpus = []
         if self.recap_pairs:
-            for v1, v2 in self.recap_pairs[:8000]:
+            for v1, v2 in self.recap_pairs[:20000]:
                 corpus.extend([v1, v2])
 
         for views in self.clusters.values():

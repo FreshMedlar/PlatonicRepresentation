@@ -40,10 +40,10 @@ class TestBenchmarkAndLoader(unittest.TestCase):
 
         vocab_sz = cls.tokenizer.vocab_size
         cls.config = SystemConfig(
-            encoder=EncoderConfig(vocab_size=vocab_sz, d_model=32, latent_dim=16, max_seq_len=24),
+            encoder=EncoderConfig(vocab_size=vocab_sz, d_model=32, num_heads=4, latent_dim=16, max_seq_len=24),
             sigreg=SIGRegConfig(),
-            decoder=DecoderConfig(vocab_size=vocab_sz, d_model=32, latent_dim=16, max_seq_len=24, num_soft_tokens=2),
-            predictor=PredictorConfig(latent_dim=16, d_model=32, max_steps=4),
+            decoder=DecoderConfig(vocab_size=vocab_sz, d_model=32, num_heads=4, latent_dim=16, max_seq_len=24, num_soft_tokens=2),
+            predictor=PredictorConfig(latent_dim=16, d_model=32, num_heads=4, max_steps=4),
             device="cpu",
         )
 

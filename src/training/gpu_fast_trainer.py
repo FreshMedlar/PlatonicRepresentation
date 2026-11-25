@@ -249,17 +249,20 @@ def train_gpu(
     epochs_s1: int = 35,
     epochs_s2: int = 80,
     epochs_s3: int = 80,
-    num_samples: int = 4096,
+    num_samples: int = 16384,
     batch_size: int = 128,
-    vocab_size: int = 1500,
-    d_model: int = 256,
-    num_layers: int = 4,
-    latent_dim: int = 128,
+    vocab_size: int = 4000,
+    d_model: int = 384,
+    num_layers: int = 6,
+    num_heads: int = 12,
+    latent_dim: int = 256,
     retokenize: bool = False,
+    rebuild_tokenizer: bool = False,
 ):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"\n============================================================")
     print(f" GOOD-VIEW TEXT JEPA (PLATONIC REPRESENTATION) ON: {torch.cuda.get_device_name(0)}")
+    print(f" Model Tier A: d_model={d_model}, layers={num_layers}, heads={num_heads}, d_z={latent_dim}, V={vocab_size}")
     print(f" Mode: Stage '{stage}' | S1={epochs_s1} eps, S2={epochs_s2} eps, S3={epochs_s3} eps")
     print(f"============================================================")
     os.makedirs(save_dir, exist_ok=True)
@@ -269,61 +272,80 @@ def train_gpu(
     pair_cache = os.path.join(save_dir, "pair_cache.pt")
     traj_cache = os.path.join(save_dir, "traj_cache.pt")
 
-    if retokenize:
-        for p in [tok_path, pair_cache, traj_cache]:
-            if os.path.exists(p):
-                os.remove(p)
-
-    hf_loader = HFGoodViewLoader(max_clusters=5000, max_trajectories=2000)
-
-    if os.path.exists(tok_path):
-        print(f"[+] Loading tokenizer from {tok_path}...")
-        tokenizer = BPETokenizer.load(tok_path)
-    else:
-        print("[*] Training BPE tokenizer on TaPaCo + WikiHow corpus...")
-        tokenizer = BPETokenizer()
-        tokenizer.train(hf_loader.get_all_texts()[:15000], target_vocab_size=vocab_size)
-        tokenizer.save(tok_path)
-
-    actual_vocab_size = tokenizer.vocab_size
-
-    # 2. Config & Models (No style conditioning: num_styles=0, style_dim=0)
-    config = SystemConfig(
-        encoder=EncoderConfig(vocab_size=actual_vocab_size, max_seq_len=48, d_model=d_model, num_layers=num_layers, num_heads=8, d_ff=d_model*4, latent_dim=latent_dim),
-        sigreg=SIGRegConfig(lam=1.0, num_projections=64, num_integration_steps=17, reg_weight=0.05),
-        decoder=DecoderConfig(vocab_size=actual_vocab_size, max_seq_len=48, d_model=d_model, num_layers=num_layers, num_heads=8, d_ff=d_model*4, latent_dim=latent_dim, num_soft_tokens=4, num_styles=0, style_dim=0),
-        predictor=PredictorConfig(latent_dim=latent_dim, max_steps=6, d_model=d_model, num_layers=num_layers, num_heads=8, d_ff=d_model*4, reg_weight=0.05),
-        device="cuda",
-    )
-
-    encoder = TextJEPAEncoder(config.encoder).to(device)
-    sigreg = SIGRegLoss(latent_dim=latent_dim, lam=1.0, num_projections=64, num_integration_steps=17).to(device)
-    decoder = ConditionalTextDecoder(config.decoder).to(device)
-    predictor = LatentPredictor(config.predictor).to(device)
-
-    stages_to_run = [s.strip() for s in stage.split(",")]
-    if "all" in stages_to_run:
-        stages_to_run = ["1", "2", "3"]
-
     # Load existing checkpoints if continuing or running isolated stages
     enc_path = os.path.join(save_dir, "encoder.pt")
     dec_path = os.path.join(save_dir, "decoder.pt")
     pred_path = os.path.join(save_dir, "predictor.pt")
 
+    if rebuild_tokenizer and os.path.exists(tok_path):
+        os.remove(tok_path)
+
+    if retokenize:
+        for p in [pair_cache, traj_cache]:
+            if os.path.exists(p):
+                os.remove(p)
+
+    hf_loader = HFGoodViewLoader(max_clusters=5000, max_trajectories=2000, max_recap_pairs=100000)
+
+    if os.path.exists(tok_path):
+        print(f"[+] Loading tokenizer from {tok_path}...")
+        tokenizer = BPETokenizer.load(tok_path)
+    else:
+        print(f"[*] Training BPE tokenizer on Recap-DataComp + TaPaCo + WikiHow corpus (Target V={vocab_size})...")
+        tokenizer = BPETokenizer()
+        tokenizer.train(hf_loader.get_all_texts()[:25000], target_vocab_size=vocab_size)
+        tokenizer.save(tok_path)
+
+    actual_vocab_size = tokenizer.vocab_size
+
+    # 2. Config & Models (Tier A - No style conditioning: num_styles=0, style_dim=0)
+    config = SystemConfig(
+        encoder=EncoderConfig(vocab_size=actual_vocab_size, max_seq_len=48, d_model=d_model, num_layers=num_layers, num_heads=num_heads, d_ff=d_model*4, latent_dim=latent_dim),
+        sigreg=SIGRegConfig(lam=1.0, num_projections=64, num_integration_steps=17, reg_weight=0.02),
+        decoder=DecoderConfig(vocab_size=actual_vocab_size, max_seq_len=48, d_model=d_model, num_layers=num_layers, num_heads=num_heads, d_ff=d_model*4, latent_dim=latent_dim, num_soft_tokens=4, num_styles=0, style_dim=0),
+        predictor=PredictorConfig(latent_dim=latent_dim, max_steps=6, d_model=d_model, num_layers=num_layers, num_heads=num_heads, d_ff=d_model*4, reg_weight=0.05),
+        device="cuda",
+    )
+
+    encoder = TextJEPAEncoder(config.encoder).to(device)
+    sigreg = SIGRegLoss(latent_dim=latent_dim, num_projections=512, knots=17).to(device)
+    decoder = ConditionalTextDecoder(config.decoder).to(device)
+    predictor = LatentPredictor(config.predictor).to(device)
+
+    def count_params(m):
+        return sum(p.numel() for p in m.parameters() if p.requires_grad)
+
+    enc_p, dec_p, pred_p = count_params(encoder), count_params(decoder), count_params(predictor)
+    tot_p = enc_p + dec_p + pred_p
+    print(f"[PARAMETER SCALE] Encoder: {enc_p/1e6:.2f}M | Decoder: {dec_p/1e6:.2f}M | Predictor: {pred_p/1e6:.2f}M | Total: {tot_p/1e6:.2f}M params")
+
+    stages_to_run = [s.strip() for s in stage.split(",")]
+    if "all" in stages_to_run:
+        stages_to_run = ["1", "2", "3"]
+
     if "1" not in stages_to_run and os.path.exists(enc_path):
-        print(f"[+] Loading frozen Stage 1 Encoder checkpoint from {enc_path}...")
-        enc_ckpt = torch.load(enc_path, map_location=device)
-        encoder.load_state_dict(enc_ckpt["encoder"])
+        try:
+            print(f"[+] Loading frozen Stage 1 Encoder checkpoint from {enc_path}...")
+            enc_ckpt = torch.load(enc_path, map_location=device)
+            encoder.load_state_dict(enc_ckpt["encoder"])
+        except Exception as e:
+            print(f"[!] Warning: could not load encoder checkpoint: {e}")
 
     if "2" not in stages_to_run and os.path.exists(dec_path):
-        print(f"[+] Loading Stage 2 Decoder checkpoint from {dec_path}...")
-        dec_ckpt = torch.load(dec_path, map_location=device)
-        decoder.load_state_dict(dec_ckpt["decoder"])
+        try:
+            print(f"[+] Loading Stage 2 Decoder checkpoint from {dec_path}...")
+            dec_ckpt = torch.load(dec_path, map_location=device)
+            decoder.load_state_dict(dec_ckpt["decoder"])
+        except Exception as e:
+            print(f"[!] Warning: could not load decoder checkpoint: {e}")
 
     if "3" not in stages_to_run and os.path.exists(pred_path):
-        print(f"[+] Loading Stage 3 Predictor checkpoint from {pred_path}...")
-        pred_ckpt = torch.load(pred_path, map_location=device)
-        predictor.load_state_dict(pred_ckpt["predictor"])
+        try:
+            print(f"[+] Loading Stage 3 Predictor checkpoint from {pred_path}...")
+            pred_ckpt = torch.load(pred_path, map_location=device)
+            predictor.load_state_dict(pred_ckpt["predictor"])
+        except Exception as e:
+            print(f"[!] Warning: could not load predictor checkpoint: {e}")
 
     # 3. Pre-load GPU datasets (Zero CPU bottleneck during training)
     if os.path.exists(pair_cache):
@@ -359,7 +381,7 @@ def train_gpu(
     if "1" in stages_to_run:
         print(f"\n>>> STAGE 1: GPU TRAINING JEPA ENCODER WITH SIGREG ({epochs_s1} Epochs)")
         encoder.train()
-        opt1 = create_optimizer(encoder, lr=8e-4, weight_decay=0.01)
+        opt1 = create_optimizer(encoder, lr=5e-4, weight_decay=0.01)
         N = num_samples
         num_batches = N // batch_size
         sched1 = get_cosine_schedule_with_warmup(opt1, num_warmup_steps=num_batches, num_training_steps=epochs_s1 * num_batches)
@@ -377,7 +399,7 @@ def train_gpu(
                 opt1.zero_grad()
                 e1 = encoder(v1_ids, attention_mask=v1_m)
                 e2 = encoder(v2_ids, attention_mask=v2_m)
-                tot_l, inv_l, reg_l = compute_lejepa_loss(e1, e2, sigreg, reg_weight=0.05)
+                tot_l, inv_l, reg_l = compute_lejepa_loss(e1, e2, sigreg, reg_weight=0.02)
                 tot_l.backward()
                 torch.nn.utils.clip_grad_norm_(encoder.parameters(), max_norm=1.0)
                 opt1.step()
@@ -402,6 +424,15 @@ def train_gpu(
     for p in encoder.parameters():
         p.requires_grad = False
 
+    def encode_in_chunks(ids, masks, chunk_size=512):
+        out_list = []
+        with torch.no_grad():
+            for c_start in range(0, ids.size(0), chunk_size):
+                c_ids = ids[c_start : c_start + chunk_size]
+                c_m = masks[c_start : c_start + chunk_size]
+                out_list.append(encoder(c_ids, attention_mask=c_m))
+        return torch.cat(out_list, dim=0)
+
     # ==========================================================
     # STAGE 2: CONDITIONAL DECODER (MIXED TAPaCo + WikiHow STEPS)
     # ==========================================================
@@ -421,6 +452,9 @@ def train_gpu(
         num_dec_batches = N_dec // batch_size
         print(f"[+] Unified decoder corpus: {N_dec} sentences ({pair_data['clean1_ids'].size(0)} TaPaCo + {wh_step_ids.size(0)} WikiHow steps).")
 
+        print(f"[*] Pre-encoding {N_dec} decoder training sentences into Platonic vectors R^k on GPU...")
+        dec_all_e = encode_in_chunks(dec_all_ids, dec_all_masks, chunk_size=512)
+
         decoder.train()
         opt2 = create_optimizer(decoder, lr=8e-4, weight_decay=0.01)
         sched2 = get_cosine_schedule_with_warmup(opt2, num_warmup_steps=num_dec_batches, num_training_steps=epochs_s2 * num_dec_batches)
@@ -434,9 +468,7 @@ def train_gpu(
                 idx = perm[b * batch_size : (b + 1) * batch_size]
                 c_ids = dec_all_ids[idx]
                 c_m = dec_all_masks[idx]
-
-                with torch.no_grad():
-                    e = encoder(c_ids, attention_mask=c_m)
+                e = dec_all_e[idx]
 
                 dec_in = c_ids[:, :-1]
                 dec_m = c_m[:, :-1]
@@ -619,10 +651,16 @@ def parse_args():
     parser.add_argument("--epochs_s1", type=int, default=35, help="Epochs for Stage 1 (Encoder)")
     parser.add_argument("--epochs_s2", type=int, default=80, help="Epochs for Stage 2 (Decoder)")
     parser.add_argument("--epochs_s3", type=int, default=80, help="Epochs for Stage 3 (Predictor)")
-    parser.add_argument("--num_samples", type=int, default=4096, help="Number of samples")
+    parser.add_argument("--num_samples", type=int, default=16384, help="Number of positive pair samples for Stage 1 & 2")
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
+    parser.add_argument("--vocab_size", type=int, default=4000, help="Target vocabulary size")
+    parser.add_argument("--d_model", type=int, default=384, help="Transformer model dimension")
+    parser.add_argument("--num_layers", type=int, default=6, help="Number of transformer layers")
+    parser.add_argument("--num_heads", type=int, default=12, help="Number of attention heads")
+    parser.add_argument("--latent_dim", type=int, default=256, help="Platonic latent dimension k")
     parser.add_argument("--save_dir", type=str, default="checkpoints_gpu_fast", help="Checkpoint directory")
-    parser.add_argument("--retokenize", action="store_true", help="Force rebuild tokenizer and dataset caches")
+    parser.add_argument("--retokenize", action="store_true", help="Force rebuild dataset caches")
+    parser.add_argument("--rebuild_tokenizer", action="store_true", help="Force retrain BPE tokenizer from scratch")
     return parser.parse_args()
 
 
@@ -636,5 +674,11 @@ if __name__ == "__main__":
         epochs_s3=args.epochs_s3,
         num_samples=args.num_samples,
         batch_size=args.batch_size,
+        vocab_size=args.vocab_size,
+        d_model=args.d_model,
+        num_layers=args.num_layers,
+        num_heads=args.num_heads,
+        latent_dim=args.latent_dim,
         retokenize=args.retokenize,
+        rebuild_tokenizer=args.rebuild_tokenizer,
     )
