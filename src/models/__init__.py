@@ -4,6 +4,15 @@ from .encoder import TextJEPAEncoder
 from .decoder import ConditionalTextDecoder
 from .predictor import LatentPredictor
 from .pipeline import GoodViewTextJEPA
+from .baby_jepa import (
+    ActionConditionedPredictor,
+    BabyJEPASystem,
+    BabyVisionEncoder,
+    BabyWordEncoder,
+    CrossModalHead,
+    PredictorEnsemble,
+    whitened_mse,
+)
 
 __all__ = [
     "SIGRegLoss",
@@ -16,4 +25,11 @@ __all__ = [
     "ConditionalTextDecoder",
     "LatentPredictor",
     "GoodViewTextJEPA",
+    "ActionConditionedPredictor",
+    "BabyJEPASystem",
+    "BabyVisionEncoder",
+    "BabyWordEncoder",
+    "CrossModalHead",
+    "PredictorEnsemble",
+    "whitened_mse",
 ]
